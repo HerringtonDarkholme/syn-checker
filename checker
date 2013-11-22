@@ -1,0 +1,271 @@
+#! /usr/bin/env node
+
+var spawn = require('child_process').spawn,
+    path = require('path'),
+    fs = require('fs'),
+    stat = fs.statSync,
+    CHILD_PROCESS = spawn('pwd').constructor;
+
+function Cmd(arg) {
+  /**
+   * @type   {Cmd}  a thin wrapper of CHILD_PROCESS
+   * @method pipe   pipe enable chain calling
+   * @method print  print on screen
+   */
+  if (!arg) {
+    this.proc = null;
+  } else if (arg instanceof CHILD_PROCESS){
+    this.proc = arg;
+  } else {
+    this.proc = spawn.apply(null, arguments);
+  }
+}
+
+Cmd.prototype = {
+  dump : function (proc) {
+    if (proc instanceof CHILD_PROCESS) {
+      this.proc = proc;
+      return this;
+    }
+    throw new TypeError('expect CHILD_PROCESS');
+  },
+
+  pipe : function (next) {
+    if (!(next instanceof Cmd)) {
+      next = new Cmd().dump(spawn.apply(null, arguments));
+    }
+    this.proc.stdout.pipe(next.proc.stdin);
+    return next;
+  },
+
+  print: function (prfx) {
+    // opt once over on
+    this.proc.stdout.once('data', function (data) {
+      console.log(prfx + data.toString());
+    });
+    //this.proc.stderr.pipe(process.stderr);
+    return this;
+  }
+};
+
+// Utility
+function camelizeRule(text) {
+  return text.replace(/^--/, '').
+          replace(/-([a-z])/g, function(match, $1) {
+            return $1.toUpperCase();
+          });
+}
+
+function str2arg (text, alias) {
+  var nameToken = /(^[^'" ]+)(.*)/,
+      singleQuotation = /^'([^']*(?:\\'[^']*)*)'(.*)/,
+      doubleQuotation = /^"([^"]*(?:\\"[^"]*)*)"(.*)/,
+      match = nameToken.exec(text.trim()),
+      command = '',
+      args = [];
+
+  if (!match) {
+    return null;
+  }
+  command = match[1];
+  command = alias && alias[command] ? alias[command] : command;
+  text = match[2].trim();
+
+  while (text) {
+    if (match = text.match(nameToken)) {
+      '';
+    } else if (match = text.match(singleQuotation)) {
+      '';
+    } else if (match = text.match(doubleQuotation)) {
+      '';
+    }
+    args.push(match[1]);
+    text = match[2].trim();
+  }
+
+  return [command, args];
+}
+
+function parseArg() {
+  /**
+   * @return {Object} arg s
+   *    @property {Array[strings]}  arg s.types
+   *    @property {Array[Strings]}  arg s.rules
+   *    @property {Array[Strings]}  arg s.sources
+   *    @property {Array[Booleans]} arg s.isDir
+   *
+   */
+
+  var args = process.argv.slice(2),
+      sources = [],
+      rules = [],
+      types = [],
+      isDir = [];
+
+  var SRC = 0, // const shall be preferred
+      RULE = 1,
+      TYPE = 2;
+
+  function argType(text) {
+    if (/^-[a-z]+$/i.test(text)) {
+      return TYPE;
+    }
+
+    if (/^--[-a-z]+$/i.test(text)) {
+      return RULE;
+    }
+
+    return SRC;
+  }
+
+
+  if (args.length === 0) {
+    console.log('Usage: blah');
+    process.exit(0);
+  }
+
+  args.forEach(function (e) {
+    var absPath, tar;
+    switch (argType(e)) {
+    case SRC:
+      absPath = e[0] === '/' ? e : path.join(__dirname, e);
+      try {
+        tar = stat(absPath);
+        if (tar.isDirectory()) {
+          sources.push(absPath);
+          isDir.push(true);
+        } else{
+          sources.push(absPath);
+          isDir.push(false);
+        }
+      } catch(err) {
+        console.log(e + ' : Not Found');
+      }
+      break;
+
+    case TYPE:
+      e =  e.replace(/^-/, '').split('');
+      types = types.concat(e);
+      break;
+
+    case RULE:
+      rules.push(camelizeRule(e));
+      break;
+
+    default:
+      console.log('Unknown Option: ' + e);
+      break;
+    }
+  });
+
+  if (!sources.length) {
+    sources.push(process.cwd());
+    isDir.push(true);
+  }
+
+  // handle file types here
+  if (!types.length) {
+    types.push('a');
+  }
+  types = types.reduce(function (arr, e) {
+    if (e === 'a') {
+      arr = ['h', 'c', 'j'];
+    } else if (!~arr.indexOf(e)) {
+      arr.push(e);
+    }
+    return arr;
+  }, []);
+
+  return {
+    types: types,
+    rules: rules,
+    sources: sources,
+    isDir: isDir
+  };
+
+}
+
+function parseRule(text, alias) {
+  /**
+   * @param  {String} string of command
+   * @param  {Object} alias: dict for alias
+   * @return {Cmd}    piped Cmd
+   */
+  var programs = text.split('|'),
+      arg = str2arg(programs[0], alias),
+      first = new Cmd(arg[0], arg[1]),
+      ret;
+
+  ret = programs.slice(1).reduce(function (prev, nextStr) {
+    var arg = str2arg(nextStr, alias),
+        next = new Cmd(arg[0], arg[1]);
+    return prev.pipe(next);
+  }, first);
+
+  return ret;
+}
+
+
+function run() {
+  var args = parseArg(),
+      rules = args.rules,
+      types = args.types,
+      sources = args.sources,
+      isDir = args.isDir,
+      typeHash = {
+        '.slim' : 'h',
+        '.scss' : 'c',
+        '.js' : 'j',
+        'h' : '.slim',
+        'c' : '.scss',
+        'j' : '.js'
+      };
+
+  var imported = {}, alias = {};
+
+  function handleDir (dirname) {
+    fs.readdir(dirname, function (err, files) {
+      files.forEach(function(f) {
+        f = path.join(dirname, f);
+        if (fs.statSync(f).isDirectory()) {
+          handleDir(f);
+        } else {
+          handleFile(f);
+        }
+      });
+    });
+  }
+
+  function handleFile(file) {
+    var r = rules,
+        extname = path.extname(file),
+        t = typeHash[extname];
+    if (!~types.indexOf(t)) {
+      return;
+    }
+
+    if (r.length === 0 && imported[t]) {
+      r = Object.keys(imported[t]);
+    }
+
+    r.forEach(function(r) {
+      if (imported[t] && imported[t][r]) {
+        parseRule(imported[t][r] + ' ' + file, alias).print(file);
+      }
+    });
+  }
+
+  fs.readFile(__dirname + '/rules.json',
+              {encoding: 'utf-8'},
+              function (err, data) {
+
+    imported = JSON.parse(data);
+    alias = imported.alias;
+    sources.forEach(function (e, i) {
+      isDir[i] ? handleDir(e) : handleFile(e);
+    });
+  });
+
+}
+
+run();

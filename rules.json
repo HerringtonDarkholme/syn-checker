@@ -1,0 +1,10 @@
+{
+  "j" : {
+    "trailingSpace" : "grep -P ' +$'",
+    "leadingSpace"  : "grep -P '^ +'"
+  },
+
+  "alias" : {
+    "grep" : "/usr/local/bin/grep"
+  }
+}
