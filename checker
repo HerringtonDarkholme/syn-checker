@@ -191,7 +191,7 @@ function parseRule(text, alias) {
    * @param  {Object} alias: dict for alias
    * @return {Cmd}    piped Cmd
    */
-  var programs = text.split('|'),
+  var programs = text.split('||||||||'), // TODO: pipe
       arg = str2arg(programs[0], alias),
       first = new Cmd(arg[0], arg[1]),
       ret;
