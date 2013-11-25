@@ -6,6 +6,9 @@ var spawn = require('child_process').spawn,
     stat = fs.statSync,
     CHILD_PROCESS = spawn('pwd').constructor;
 
+var MAX_FILE_DESCRIPTOR = 10,
+    globalCurrentFile = 0;
+
 function Cmd(arg) {
   /**
    * @type   {Cmd}  a thin wrapper of CHILD_PROCESS
@@ -42,6 +45,9 @@ Cmd.prototype = {
     // opt once over on
     this.proc.stdout.once('data', function (data) {
       console.log(prfx + data.toString());
+    });
+    this.proc.on('exit', function() {
+      globalCurrentFile--;
     });
     //this.proc.stderr.pipe(process.stderr);
     return this;
@@ -237,6 +243,11 @@ function run() {
   }
 
   function handleFile(file) {
+    if (globalCurrentFile > MAX_FILE_DESCRIPTOR) {
+      setImmediate(handleFile, file);
+      return;
+    }
+
     var r = rules,
         extname = path.extname(file),
         t = typeHash[extname];
@@ -250,7 +261,9 @@ function run() {
 
     r.forEach(function(r) {
       if (imported[t] && imported[t][r]) {
-        parseRule(imported[t][r] + ' ' + file, alias).print(file);
+        parseRule(imported[t][r] + ' ' + file, alias).
+          print(file + ': (' + r + ')\n');
+        globalCurrentFile++;
       }
     });
   }
