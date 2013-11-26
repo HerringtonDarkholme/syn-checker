@@ -6,51 +6,119 @@ var spawn = require('child_process').spawn,
     stat = fs.statSync,
     CHILD_PROCESS = spawn('pwd').constructor;
 
-var MAX_FILE_DESCRIPTOR = 10,
-    globalCurrentFile = 0;
-
-function Cmd(arg) {
+function Cmd(cmd, args) {
   /**
    * @type   {Cmd}  a thin wrapper of CHILD_PROCESS
    * @method pipe   pipe enable chain calling
    * @method print  print on screen
    */
-  if (!arg) {
-    this.proc = null;
-  } else if (arg instanceof CHILD_PROCESS){
-    this.proc = arg;
+
+  var promise,
+      that = this;
+  this.proc = null;
+  this.todo = [];
+
+  if (!cmd) {
+    return this;
+  }
+  if (cmd instanceof CHILD_PROCESS){
+    this.proc = cmd;
+    this.curretFile++;
+    return this;
+  }
+
+  promise = function () {
+    that.proc = spawn(cmd, args);
+    Cmd.curretFile++;
+    that.proc.on('exit', Cmd.moveOn);
+  };
+
+  if (Cmd.curretFile < Cmd.MAX_FILE_DESCRIPTOR){
+    promise();
   } else {
-    this.proc = spawn.apply(null, arguments);
+    this.todo.push(promise);
+    Cmd.workers.push(this);
   }
 }
+
+Cmd.MAX_FILE_DESCRIPTOR = 50;
+Cmd.curretFile = 0;
+Cmd.workers = [];
+
+Cmd.moveOn = function () {
+  var task;
+  if (--Cmd.curretFile < Cmd.MAX_FILE_DESCRIPTOR) {
+    task = Cmd.workers.shift();
+    task && setImmediate(function(){
+      // setImmediate so it does close process
+      // wrap task._fufill() in func to keep this pointer
+      task._fufill();
+    });
+  }
+};
 
 Cmd.prototype = {
   dump : function (proc) {
     if (proc instanceof CHILD_PROCESS) {
       this.proc = proc;
+      this.curretFile++;
       return this;
     }
     throw new TypeError('expect CHILD_PROCESS');
   },
 
-  pipe : function (next) {
+  pipe: function (next, args) {
+    // promise
+    var that = this;
     if (!(next instanceof Cmd)) {
-      next = new Cmd().dump(spawn.apply(null, arguments));
+      next = new Cmd(next, args);
     }
+    var promise = function () {
+      that.pipe.call(that, next);
+    };
+    if (!this.proc) {
+      this.todo.push(promise);
+      return next;
+    }
+    if (!next.proc) {
+      next.todo.push(promise);
+      return next;
+    }
+    return this._pipe(next);
+  },
+
+  _pipe : function (next) {
+    // internal use
     this.proc.stdout.pipe(next.proc.stdin);
     return next;
   },
 
   print: function (prfx) {
+    // promise
+    var that = this;
+    if (!this.proc) {
+      this.todo.push(function () {
+        that.print.call(that, prfx);
+      });
+      return this;
+    }
+    return this._print(prfx);
+  },
+
+  _print: function (prfx) {
     // opt once over on
+    prfx = prfx || '';
     this.proc.stdout.once('data', function (data) {
       console.log(prfx + data.toString());
     });
-    this.proc.on('exit', function() {
-      globalCurrentFile--;
-    });
     //this.proc.stderr.pipe(process.stderr);
     return this;
+  },
+
+  _fufill: function () {
+    this.todo.forEach(function(promise) {
+      promise();
+    });
   }
 };
 
@@ -92,6 +160,7 @@ function str2arg (text, alias) {
   return [command, args];
 }
 
+// parser
 function parseArg() {
   /**
    * @return {Object} arg s
@@ -126,7 +195,7 @@ function parseArg() {
 
 
   if (args.length === 0) {
-    console.log('Usage: blah');
+    console.log('Usage: ./checker -t --rule [dest]');
     process.exit(0);
   }
 
@@ -211,7 +280,7 @@ function parseRule(text, alias) {
   return ret;
 }
 
-
+// main function
 function run() {
   var args = parseArg(),
       rules = args.rules,
@@ -230,6 +299,7 @@ function run() {
   var imported = {}, alias = {};
 
   function handleDir (dirname) {
+    // recursive traversal
     fs.readdir(dirname, function (err, files) {
       files.forEach(function(f) {
         f = path.join(dirname, f);
@@ -243,11 +313,6 @@ function run() {
   }
 
   function handleFile(file) {
-    if (globalCurrentFile > MAX_FILE_DESCRIPTOR) {
-      setImmediate(handleFile, file);
-      return;
-    }
-
     var r = rules,
         extname = path.extname(file),
         t = typeHash[extname];
@@ -263,7 +328,6 @@ function run() {
       if (imported[t] && imported[t][r]) {
         parseRule(imported[t][r] + ' ' + file, alias).
           print(file + ': (' + r + ')\n');
-        globalCurrentFile++;
       }
     });
   }
